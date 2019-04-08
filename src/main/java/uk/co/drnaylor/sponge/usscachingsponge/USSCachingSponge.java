@@ -44,7 +44,7 @@ public class USSCachingSponge {
             Instant thisInstant = Instant.now();
             this.service.init();
             Duration duration = Duration.between(thisInstant, Instant.now());
-            this.logger.info("User discoverer init complete - time taken: {} ms.", ((double) duration.toMillis()) / 1000d);
+            this.logger.info("User discoverer init complete - time taken: {} s.", ((double) duration.toMillis()) / 1000d);
         });
     }
 }
