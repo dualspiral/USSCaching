@@ -1,0 +1,16 @@
+{
+  "package": "uk.co.drnaylor.sponge.usscachingsponge.mixin",
+  "refmap": "mixin.uss.refmap.json",
+  "target": "@env(DEFAULT)",
+  "compatibilityLevel": "JAVA_8",
+  "plugin": "uk.co.drnaylor.sponge.usscachingsponge.mixin.MixinPlugin",
+  "mixins": [
+    "MixinUserListEntry",
+    "MixinUserList",
+    "MixinSaveHandler"
+  ],
+  "injectors": {
+    "defaultRequire": 1
+  },
+  "priority": 1100
+}

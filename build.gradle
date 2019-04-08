@@ -1,0 +1,78 @@
+buildscript {
+    repositories {
+        jcenter()
+        maven {
+            name = "forge"
+            url = "http://files.minecraftforge.net/maven"
+        }
+        maven {
+            name = "minecrell"
+            url = "http://repo.minecrell.net/releases"
+        }
+        maven {
+            name = "sponge"
+            url = "https://repo.spongepowered.org/maven"
+        }
+    }
+
+    dependencies {
+        classpath "net.minecrell:VanillaGradle:2.0.3_1"
+        classpath "net.minecraftforge.gradle:ForgeGradle:2.3-SNAPSHOT"
+        classpath "org.spongepowered:mixingradle:0.4-SNAPSHOT"
+    }
+}
+
+plugins {
+    id 'java'
+    id 'org.spongepowered.plugin' version '0.8.1'
+}
+
+apply plugin: "net.minecrell.vanilla.server.library"
+
+group = pluginGroup
+version = pluginVersion
+
+repositories {
+    jcenter()
+    maven {
+        name = 'spongepowered-repo'
+        url = 'https://repo.spongepowered.org/maven/'
+    }
+}
+
+dependencies {
+    //compile 'org.spongepowered:spongeapi:7.1.0'
+    compile 'org.spongepowered:spongecommon:1.12.2-7.1.6-SNAPSHOT:dev'
+    compile("org.spongepowered:mixin:0.7.10-SNAPSHOT") {
+        exclude module: "launchwrapper"
+        exclude module: "guava"
+    }
+}
+
+jar {
+    manifest {
+        attributes(
+                "MixinConfigs": "mixin.uss.json",
+                "tweakClass": "org.spongepowered.asm.launch.MixinTweaker",
+                "TweakOrder": 0,
+                "ForceLoadAsMod": true
+        )
+    }
+}
+
+sponge.plugin.id = pluginId
+
+minecraft {
+    version = "1.12"
+    mappings = "snapshot_20180808"
+}
+
+reobf.jar {
+    mappingType = "SEARGE"
+}
+
+sourceSets {
+    main {
+        ext.refMap = "mixin.uss.refmap.json"
+    }
+}
