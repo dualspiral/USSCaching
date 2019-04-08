@@ -1,4 +1,5 @@
 {
+  "minVersion": "0.7.10",
   "package": "uk.co.drnaylor.sponge.usscachingsponge.mixin",
   "refmap": "mixin.uss.refmap.json",
   "target": "@env(DEFAULT)",

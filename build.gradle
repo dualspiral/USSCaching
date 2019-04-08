@@ -18,7 +18,7 @@ buildscript {
     dependencies {
         classpath "net.minecrell:VanillaGradle:2.0.3_1"
         classpath "net.minecraftforge.gradle:ForgeGradle:2.3-SNAPSHOT"
-        classpath "org.spongepowered:mixingradle:0.4-SNAPSHOT"
+        classpath "org.spongepowered:mixingradle:0.6-SNAPSHOT"
     }
 }
 
@@ -28,6 +28,7 @@ plugins {
 }
 
 apply plugin: "net.minecrell.vanilla.server.library"
+apply plugin: 'org.spongepowered.mixin'
 
 group = pluginGroup
 version = pluginVersion
@@ -42,7 +43,7 @@ repositories {
 
 dependencies {
     //compile 'org.spongepowered:spongeapi:7.1.0'
-    compile 'org.spongepowered:spongecommon:1.12.2-7.1.6-SNAPSHOT:dev'
+    compile 'org.spongepowered:spongevanilla:1.12.2-7.1.6-RC157'
     compile("org.spongepowered:mixin:0.7.10-SNAPSHOT") {
         exclude module: "launchwrapper"
         exclude module: "guava"
@@ -55,7 +56,8 @@ jar {
                 "MixinConfigs": "mixin.uss.json",
                 "tweakClass": "org.spongepowered.asm.launch.MixinTweaker",
                 "TweakOrder": 0,
-                "ForceLoadAsMod": true
+                "ForceLoadAsMod": true,
+                'FMLCorePluginContainsFMLMod': true
         )
     }
 }
