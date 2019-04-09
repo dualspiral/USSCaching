@@ -40,11 +40,6 @@ public class USSCachingSponge {
         this.logger.warn("See https://github.com/SpongePowered/SpongeCommon/pull/2124");
         this.logger.warn("-------------------------------------------------------------------------------------------");
         this.logger.info("Starting init of user discoverer async.");
-        SpongeImpl.getScheduler().createAsyncExecutor(SpongeImpl.getSpongePlugin()).execute(() -> {
-            Instant thisInstant = Instant.now();
-            this.service.init();
-            Duration duration = Duration.between(thisInstant, Instant.now());
-            this.logger.info("User discoverer init complete - time taken: {} s.", ((double) duration.toMillis()) / 1000d);
-        });
+        this.service.init();
     }
 }

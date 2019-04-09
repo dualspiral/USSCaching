@@ -25,6 +25,7 @@
 package uk.co.drnaylor.sponge.usscachingsponge;
 
 import com.google.common.collect.Sets;
+import org.slf4j.Logger;
 import org.spongepowered.api.Sponge;
 import org.spongepowered.api.entity.living.player.User;
 import org.spongepowered.api.profile.GameProfile;

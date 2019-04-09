@@ -29,55 +29,47 @@ import com.google.common.cache.Cache;
 import com.google.common.cache.CacheBuilder;
 import com.google.common.cache.RemovalCause;
 import com.google.common.cache.RemovalNotification;
-import com.google.common.collect.*;
+import com.google.common.collect.HashMultimap;
+import com.google.common.collect.Multimap;
+import com.google.common.collect.Sets;
 import com.mojang.authlib.GameProfile;
-import com.mojang.authlib.GameProfileRepository;
 import net.minecraft.nbt.CompressedStreamTools;
 import net.minecraft.server.management.*;
 import net.minecraft.world.WorldServer;
-import net.minecraft.world.storage.SaveHandler;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.spongepowered.api.Sponge;
 import org.spongepowered.api.entity.living.player.User;
+import org.spongepowered.api.profile.GameProfileCache;
 import org.spongepowered.api.profile.ProfileNotFoundException;
 import org.spongepowered.common.SpongeImpl;
 import org.spongepowered.common.entity.player.SpongeUser;
-import org.spongepowered.common.interfaces.IMixinSaveHandler;
 import org.spongepowered.common.interfaces.entity.player.IMixinEntityPlayerMP;
 import org.spongepowered.common.world.WorldManager;
 
+import javax.annotation.Nullable;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.IOException;
-import java.nio.file.DirectoryStream;
-import java.nio.file.FileSystems;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.nio.file.StandardWatchEventKinds;
-import java.nio.file.WatchEvent;
-import java.nio.file.WatchKey;
-import java.nio.file.WatchService;
-import java.util.Collection;
-import java.util.HashMap;
-import java.util.HashSet;
-import java.util.Locale;
-import java.util.Map;
-import java.util.Optional;
-import java.util.Set;
-import java.util.UUID;
+import java.nio.file.*;
+import java.time.Duration;
+import java.time.Instant;
+import java.util.*;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
-
-import javax.annotation.Nullable;
 
 class UserDiscoverer {
 
     private static final Set<UUID> detectedStoredUUIDs = new HashSet<>();
+    private static final Logger LOGGER = LoggerFactory.getLogger(USSCachingSponge.class);
 
     @Nullable private static WatchService filesystemWatchService = null;
     @Nullable private static WatchKey watchKey = null;
 
     // Used to ensure that race conditions aren't hit when doing the filesystem checks
     private final static Object lockingObject = new Object();
+    private static boolean hasInitBeenStarted = false;
+    private static boolean scanningIO = true;
 
     // This is inherently tied to the user cache, so we use its removal listener to remove entries here.
     private static final Map<UUID, org.spongepowered.api.profile.GameProfile> gameProfileCache = new HashMap<>();
@@ -202,11 +194,18 @@ class UserDiscoverer {
     }
 
     static Collection<org.spongepowered.api.profile.GameProfile> getAllProfiles() {
+        if (scanningIO) {
+            // A good temporary measure is to use the game profile cache.
+            return ((GameProfileCache) SpongeImpl.getServer().getPlayerProfileCache()).getProfiles();
+        }
+
+        Preconditions.checkState(Sponge.isServerAvailable(), "Server is not available!");
+        if (filesystemWatchService == null || watchKey == null || !watchKey.isValid()) {
+            startFilesystemWatchService();
+            return ((GameProfileCache) SpongeImpl.getServer().getPlayerProfileCache()).getProfiles();
+        }
+
         synchronized (lockingObject) {
-            Preconditions.checkState(Sponge.isServerAvailable(), "Server is not available!");
-            if (filesystemWatchService == null || watchKey == null || !watchKey.isValid()) {
-                startFilesystemWatchService();
-            }
 
             // Add all cached profiles to a new map, we don't want to alter the current "cache" map.
             final Map<UUID, org.spongepowered.api.profile.GameProfile> profiles = new HashMap<>(gameProfileCache);
@@ -234,48 +233,62 @@ class UserDiscoverer {
     }
 
     static void init() {
-        synchronized (lockingObject) {
-            startFilesystemWatchService();
+        if (!hasInitBeenStarted) {
+            hasInitBeenStarted = true;
+            synchronized (lockingObject) {
+                startFilesystemWatchService();
+            }
         }
     }
 
     // Used to avoid blocking on a lock.
     private static void startFilesystemWatchService() {
         Preconditions.checkState(Sponge.isServerAvailable(), "Server is not available!");
+        scanningIO = true;
+        SpongeImpl.getScheduler().createAsyncExecutor(SpongeImpl.getPlugin())
+                .execute(UserDiscoverer::startFilesystemWatchServiceTask);
+    }
 
-        // if we're in init, we need to remove the old service and watchkey
-        if (watchKey != null) {
-            watchKey.cancel();
-            watchKey = null;
-        }
-
-        if (filesystemWatchService != null) {
-            try {
-                filesystemWatchService.close();
-            } catch (IOException e) {
-                filesystemWatchService = null;
+    private static void startFilesystemWatchServiceTask() {
+        synchronized (lockingObject) {
+            Instant thisInstant = Instant.now();
+            // if we're in init, we need to remove the old service and watchkey
+            if (watchKey != null) {
+                watchKey.cancel();
+                watchKey = null;
             }
-        }
 
-        detectedStoredUUIDs.clear();
-        nonExistentUsers.clear();
-
-        IMixinUSSSaveHandler saveHandler = (IMixinUSSSaveHandler) WorldManager.getWorldByDimensionId(0).get().getSaveHandler();
-        Set<UUID> uuids = getAvailablePlayerUUIDs(saveHandler.getPlayerSaveDirectory());
-        detectedStoredUUIDs.addAll(uuids);
-
-        // Setup the watch service
-        try {
-            filesystemWatchService = FileSystems.getDefault().newWatchService();
-            watchKey = saveHandler.getPlayerSaveDirectory().register(
-                    filesystemWatchService,
-                    StandardWatchEventKinds.ENTRY_CREATE,
-                    StandardWatchEventKinds.ENTRY_DELETE);
-        } catch (IOException e) {
-            SpongeImpl.getLogger().warn("Could not start file watcher");
             if (filesystemWatchService != null) {
-                filesystemWatchService = null; // it might be the watchKey that failed, so null it out again.
+                try {
+                    filesystemWatchService.close();
+                } catch (IOException e) {
+                    filesystemWatchService = null;
+                }
             }
+
+            detectedStoredUUIDs.clear();
+            nonExistentUsers.clear();
+
+            IMixinUSSSaveHandler saveHandler = (IMixinUSSSaveHandler) WorldManager.getWorldByDimensionId(0).get().getSaveHandler();
+            Set<UUID> uuids = getAvailablePlayerUUIDs(saveHandler.getPlayerSaveDirectory());
+            detectedStoredUUIDs.addAll(uuids);
+
+            // Setup the watch service
+            try {
+                filesystemWatchService = FileSystems.getDefault().newWatchService();
+                watchKey = saveHandler.getPlayerSaveDirectory().register(
+                        filesystemWatchService,
+                        StandardWatchEventKinds.ENTRY_CREATE,
+                        StandardWatchEventKinds.ENTRY_DELETE);
+            } catch (IOException e) {
+                SpongeImpl.getLogger().warn("Could not start file watcher");
+                if (filesystemWatchService != null) {
+                    filesystemWatchService = null; // it might be the watchKey that failed, so null it out again.
+                }
+            }
+
+            Duration duration = Duration.between(thisInstant, Instant.now());
+            LOGGER.info("User discoverer init complete - time taken: {} s.", ((double) duration.toMillis()) / 1000d);
         }
     }
 
