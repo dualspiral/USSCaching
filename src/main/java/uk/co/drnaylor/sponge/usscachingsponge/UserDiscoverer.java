@@ -280,6 +280,7 @@ class UserDiscoverer {
                         filesystemWatchService,
                         StandardWatchEventKinds.ENTRY_CREATE,
                         StandardWatchEventKinds.ENTRY_DELETE);
+                scanningIO = false;
             } catch (IOException e) {
                 SpongeImpl.getLogger().warn("Could not start file watcher");
                 if (filesystemWatchService != null) {
