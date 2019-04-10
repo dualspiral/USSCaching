@@ -298,10 +298,11 @@ class UserDiscoverer {
         Set<UUID> ret = new HashSet<>();
         try (DirectoryStream<Path> stream = Files.newDirectoryStream(playersDirectory, "*.dat")) {
             for (Path entry : stream) {
+                String name = entry.getFileName().toString().replaceAll("\\.dat$", "");
                 try {
-                    String name = entry.getFileName().toString();
-                    ret.add(UUID.fromString(name.substring(0, name.lastIndexOf(".")+1)));
+                    ret.add(UUID.fromString(name));
                 } catch (IllegalArgumentException ex) {
+                    LOGGER.warn("Could not add {}, error was {}", name, ex.getMessage());
                     // ignored - the file is not of interest to us
                 }
             }
