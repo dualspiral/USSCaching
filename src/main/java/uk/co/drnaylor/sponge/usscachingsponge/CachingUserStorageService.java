@@ -24,8 +24,11 @@
  */
 package uk.co.drnaylor.sponge.usscachingsponge;
 
+import static com.google.common.base.Preconditions.checkArgument;
+import static com.google.common.base.Preconditions.checkNotNull;
+import static com.google.common.base.Preconditions.checkState;
+
 import com.google.common.collect.Sets;
-import org.slf4j.Logger;
 import org.spongepowered.api.Sponge;
 import org.spongepowered.api.entity.living.player.User;
 import org.spongepowered.api.profile.GameProfile;
@@ -36,8 +39,6 @@ import java.util.Locale;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.ExecutionException;
-
-import static com.google.common.base.Preconditions.*;
 
 // Extending this so recreating users does happen
 public class CachingUserStorageService extends SpongeUserStorageService {

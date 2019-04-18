@@ -34,10 +34,14 @@ import com.google.common.collect.Multimap;
 import com.google.common.collect.Sets;
 import com.mojang.authlib.GameProfile;
 import net.minecraft.nbt.CompressedStreamTools;
-import net.minecraft.server.management.*;
+import net.minecraft.server.management.PlayerList;
+import net.minecraft.server.management.PlayerProfileCache;
+import net.minecraft.server.management.UserListBans;
+import net.minecraft.server.management.UserListBansEntry;
+import net.minecraft.server.management.UserListEntry;
+import net.minecraft.server.management.UserListWhitelist;
+import net.minecraft.server.management.UserListWhitelistEntry;
 import net.minecraft.world.WorldServer;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 import org.spongepowered.api.Sponge;
 import org.spongepowered.api.entity.living.player.User;
 import org.spongepowered.api.profile.GameProfileCache;
@@ -47,21 +51,34 @@ import org.spongepowered.common.entity.player.SpongeUser;
 import org.spongepowered.common.interfaces.entity.player.IMixinEntityPlayerMP;
 import org.spongepowered.common.world.WorldManager;
 
-import javax.annotation.Nullable;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.IOException;
-import java.nio.file.*;
-import java.time.Duration;
-import java.time.Instant;
-import java.util.*;
+import java.nio.file.DirectoryStream;
+import java.nio.file.FileSystems;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardWatchEventKinds;
+import java.nio.file.WatchEvent;
+import java.nio.file.WatchKey;
+import java.nio.file.WatchService;
+import java.util.Collection;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Optional;
+import java.util.Set;
+import java.util.UUID;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 
+import javax.annotation.Nullable;
+
 class UserDiscoverer {
 
+    private static final Map<String, MutableWatchEvent> updateCache = new HashMap<>();
     private static final Set<UUID> detectedStoredUUIDs = new HashSet<>();
-    private static final Logger LOGGER = LoggerFactory.getLogger(USSCachingSponge.class);
 
     @Nullable private static WatchService filesystemWatchService = null;
     @Nullable private static WatchKey watchKey = null;
@@ -72,6 +89,8 @@ class UserDiscoverer {
     private static boolean scanningIO = true;
 
     // This is inherently tied to the user cache, so we use its removal listener to remove entries here.
+    // Note that this cache is intended for _stored_ user data, while the GameProfileCache might contain
+    // other user data. This is why we store it here.
     private static final Map<UUID, org.spongepowered.api.profile.GameProfile> gameProfileCache = new HashMap<>();
     private static final Multimap<String, User> caseInsensitiveUserByNameCache = HashMultimap.create();
 
@@ -206,7 +225,6 @@ class UserDiscoverer {
         }
 
         synchronized (lockingObject) {
-
             // Add all cached profiles to a new map, we don't want to alter the current "cache" map.
             final Map<UUID, org.spongepowered.api.profile.GameProfile> profiles = new HashMap<>(gameProfileCache);
 
@@ -224,8 +242,9 @@ class UserDiscoverer {
             //
             // See https://github.com/SpongePowered/SpongeCommon/issues/1989
             PlayerList pl = SpongeImpl.getServer().getPlayerList();
-            addToProfiles(((IMixinUserList<GameProfile, UserListWhitelistEntry>) pl.getWhitelistedPlayers())
-                    .getValuesPublic().values(), profiles, profileCache);
+            addToProfiles(
+                    ((IMixinUserList<GameProfile, UserListWhitelistEntry>) pl.getWhitelistedPlayers())
+                            .getValuesPublic().values(), profiles, profileCache);
             addToProfiles(((IMixinUserList<GameProfile, UserListBansEntry>) pl.getBannedPlayers())
                     .getValuesPublic().values(), profiles, profileCache);
             return profiles.values();
@@ -235,9 +254,7 @@ class UserDiscoverer {
     static void init() {
         if (!hasInitBeenStarted) {
             hasInitBeenStarted = true;
-            synchronized (lockingObject) {
-                startFilesystemWatchService();
-            }
+            startFilesystemWatchService();
         }
     }
 
@@ -250,9 +267,8 @@ class UserDiscoverer {
     }
 
     private static void startFilesystemWatchServiceTask() {
+        // if we're in init, we need to remove the old service and watchkey
         synchronized (lockingObject) {
-            Instant thisInstant = Instant.now();
-            // if we're in init, we need to remove the old service and watchkey
             if (watchKey != null) {
                 watchKey.cancel();
                 watchKey = null;
@@ -262,6 +278,8 @@ class UserDiscoverer {
                 try {
                     filesystemWatchService.close();
                 } catch (IOException e) {
+                    // ignored - we're nulling this anyway
+                } finally {
                     filesystemWatchService = null;
                 }
             }
@@ -272,6 +290,10 @@ class UserDiscoverer {
             IMixinUSSSaveHandler saveHandler = (IMixinUSSSaveHandler) WorldManager.getWorldByDimensionId(0).get().getSaveHandler();
             Set<UUID> uuids = getAvailablePlayerUUIDs(saveHandler.getPlayerSaveDirectory());
             detectedStoredUUIDs.addAll(uuids);
+
+            // Anything we might have cached already, we should add it here,
+            // in case it's been added but not saved yet
+            detectedStoredUUIDs.addAll(userCache.asMap().keySet());
 
             // Setup the watch service
             try {
@@ -284,12 +306,16 @@ class UserDiscoverer {
             } catch (IOException e) {
                 SpongeImpl.getLogger().warn("Could not start file watcher");
                 if (filesystemWatchService != null) {
-                    filesystemWatchService = null; // it might be the watchKey that failed, so null it out again.
+                    // it might be the watchKey that failed, so null it out again.
+                    try {
+                        filesystemWatchService.close();
+                    } catch (IOException ex) {
+                        // ignored
+                    }
                 }
+                watchKey = null;
+                filesystemWatchService = null;
             }
-
-            Duration duration = Duration.between(thisInstant, Instant.now());
-            LOGGER.info("User discoverer init complete - time taken: {} s.", ((double) duration.toMillis()) / 1000d);
         }
     }
 
@@ -298,11 +324,10 @@ class UserDiscoverer {
         Set<UUID> ret = new HashSet<>();
         try (DirectoryStream<Path> stream = Files.newDirectoryStream(playersDirectory, "*.dat")) {
             for (Path entry : stream) {
-                String name = entry.getFileName().toString().replaceAll("\\.dat$", "");
                 try {
+                    String name = entry.getFileName().toString().replaceAll("\\.dat$", "");
                     ret.add(UUID.fromString(name));
                 } catch (IllegalArgumentException ex) {
-                    LOGGER.warn("Could not add {}, error was {}", name, ex.getMessage());
                     // ignored - the file is not of interest to us
                 }
             }
@@ -328,30 +353,40 @@ class UserDiscoverer {
     private static void pollFilesystemWatcher() {
         // We've already got the UUIDs, so we need to just see if the file system
         // watcher has found any more (or removed any).
-        for (WatchEvent event : watchKey.pollEvents()) {
-            @SuppressWarnings("unchecked") WatchEvent<Path> ev = (WatchEvent<Path>) event;
-            WatchEvent.Kind<Path> kind = ev.kind();
+        synchronized (updateCache) {
+            updateCache.clear(); // just in case
+            for (WatchEvent event : watchKey.pollEvents()) {
+                @SuppressWarnings("unchecked") WatchEvent<Path> ev = (WatchEvent<Path>) event;
+                Path file = ev.context();
+                String filename = file.getFileName().toString();
 
-            Path file = ev.context();
-            String filename = file.getFileName().toString();
-            if (filename.endsWith(".dat")) {
-                filename = filename.replace(".dat", "");
-            } else if (filename.contains(".")) {
-                continue; // no point even trying
+                // We don't determine the UUIDs yet, we'll only do that if we need to.
+                updateCache.computeIfAbsent(filename, f -> new MutableWatchEvent()).set(ev.kind());
             }
 
-            UUID uuid;
-            try {
-                uuid = UUID.fromString(filename);
-            } catch (Exception ex) {
-                continue;
+            for (Map.Entry<String, MutableWatchEvent> entry : updateCache.entrySet()) {
+                @Nullable WatchEvent.Kind kind = entry.getValue().get();
+                if (kind != null) {
+                    String name = entry.getKey();
+                    UUID uuid;
+                    if (name.endsWith(".dat")) {
+                        try {
+                            uuid = UUID.fromString(name.substring(0, name.length() - 4));
+
+                            // It will only be create or delete here.
+                            if (kind == StandardWatchEventKinds.ENTRY_CREATE) {
+                                detectedStoredUUIDs.add(uuid);
+                            } else {
+                                detectedStoredUUIDs.remove(uuid);
+                            }
+                        } catch (IllegalArgumentException ex) {
+                            // ignored, file isn't of use to us.
+                        }
+                    }
+                }
             }
 
-            if (kind == StandardWatchEventKinds.ENTRY_CREATE) {
-                detectedStoredUUIDs.add(uuid);
-            } else if (kind == StandardWatchEventKinds.ENTRY_DELETE) {
-                detectedStoredUUIDs.remove(uuid);
-            }
+            updateCache.clear();
         }
     }
 
@@ -361,8 +396,8 @@ class UserDiscoverer {
             final PlayerProfileCache profileCache) {
 
         gameProfiles.stream()
-                .filter(x -> !profiles.containsKey(((IMixinUserListEntry<GameProfile>) x).getValuePublic().getId()))
-                .map(entry -> ((IMixinUserListEntry<GameProfile>) entry).getValuePublic())
+                .filter(x -> !profiles.containsKey(((IMixinUserListEntry<? extends GameProfile>) x).getValuePublic().getId()))
+                .map(entry -> ((IMixinUserListEntry<? extends GameProfile>) entry).getValuePublic())
                 .forEach(x -> {
                     // Get the known name, if it doesn't exist, then we don't add it - we assume no user backing
                     GameProfile profile = profileCache.getProfileByUUID(x.getId());
@@ -545,6 +580,35 @@ class UserDiscoverer {
                 caseInsensitiveUserByNameCache.remove(user.getName().toLowerCase(), user);
             }
         });
+    }
+
+    // Used to reduce the number of calls to maps.
+    static class MutableWatchEvent {
+
+        @Nullable private WatchEvent.Kind<?> kind = null;
+
+        @Nullable
+        public WatchEvent.Kind get() {
+            return this.kind;
+        }
+
+        public void set(WatchEvent.Kind<?> kind) {
+            if (kind == StandardWatchEventKinds.ENTRY_MODIFY) {
+                // This should never happen, we don't listen to this.
+                // However, if it does, treat it as a create, because it
+                // infers the existence of the file.
+                kind = StandardWatchEventKinds.ENTRY_CREATE;
+            }
+
+            if (kind == StandardWatchEventKinds.ENTRY_CREATE || kind == StandardWatchEventKinds.ENTRY_DELETE) {
+                if (this.kind != null && this.kind != kind) {
+                    this.kind = null;
+                } else {
+                    this.kind = kind;
+                }
+            }
+        }
+
     }
 
 }
