@@ -358,10 +358,13 @@ class UserDiscoverer {
             for (WatchEvent event : watchKey.pollEvents()) {
                 @SuppressWarnings("unchecked") WatchEvent<Path> ev = (WatchEvent<Path>) event;
                 Path file = ev.context();
-                String filename = file.getFileName().toString();
+                Path fileNamePath = file.getFileName();
+                if (fileNamePath != null) {
+                    String filename = fileNamePath.toString();
 
-                // We don't determine the UUIDs yet, we'll only do that if we need to.
-                updateCache.computeIfAbsent(filename, f -> new MutableWatchEvent()).set(ev.kind());
+                    // We don't determine the UUIDs yet, we'll only do that if we need to.
+                    updateCache.computeIfAbsent(filename, f -> new MutableWatchEvent()).set(ev.kind());
+                }
             }
 
             for (Map.Entry<String, MutableWatchEvent> entry : updateCache.entrySet()) {
